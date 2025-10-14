@@ -1,0 +1,24 @@
+{
+  "family": "truck-sim",
+  "networkMode": "awsvpc",
+  "cpu": "512",
+  "memory": "1024",
+  "requiresCompatibilities": ["FARGATE"],
+  "executionRoleArn": "arn:aws:iam::596369789936:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::596369789936:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "truck-sim",
+      "image": "${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/truck-sim:latest",
+      "essential": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/truck-sim",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

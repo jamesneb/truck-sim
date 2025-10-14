@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+###############################################################################
+# EDIT THESE FIVE VALUES ONLY
+REGION="us-east-1"
+CLUSTER="truck-sim-cluster"
+SUBNET_ID="subnet-0faf5b311289ea0af"          # public subnet in Test-VPC
+SEC_GROUP="sg-03b208d4bb055a8c9"              # task security group
+SCHED_NAME="truck-sim-nightly"                # EventBridge Scheduler name
+###############################################################################
+
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text --region "$REGION")
+ECR_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/truck-sim:latest"
+ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/ecsTaskExecutionRole"
+
+echo "🔧  Building Docker image …"
+docker build -t truck-sim:latest .
+
+echo "🏷️   Tag & push to ECR: $ECR_URI"
+docker tag  truck-sim:latest "$ECR_URI"
+docker push "$ECR_URI"
+
+echo "📝  Creating taskdef JSON …"
+TASKDEF_FILE=$(mktemp)
+cat > "$TASKDEF_FILE" <<EOF
+{
+  "family": "truck-sim",
+  "networkMode": "awsvpc",
+  "cpu": "512",
+  "memory": "1024",
+  "requiresCompatibilities": ["FARGATE"],
+  "executionRoleArn": "$ROLE_ARN",
+  "taskRoleArn": "$ROLE_ARN",
+  "containerDefinitions": [
+    {
+      "name": "truck-sim",
+      "image": "$ECR_URI",
+      "essential": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/truck-sim",
+          "awslogs-region": "$REGION",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}
+EOF
+
+echo "📦  Registering new task-definition …"
+NEW_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://"$TASKDEF_FILE" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text --region "$REGION")
+echo "✅  New task-definition ARN: $NEW_ARN"
+
+###############################################################################
+echo "🚀  Launching a one-off test task …"
+aws ecs run-task \
+  --cluster "$CLUSTER" \
+  --task-definition "$NEW_ARN" \
+  --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_ID],securityGroups=[$SEC_GROUP],assignPublicIp=ENABLED}" \
+  --region "$REGION" \
+  --query 'tasks[0].taskArn' --output text
+
+echo "ℹ️  Use  〈aws logs tail /ecs/truck-sim --follow --region $REGION〉  to watch logs"
+###############################################################################
+# OPTIONAL: wire the nightly schedule to this new revision
+if aws scheduler get-schedule --name "$SCHED_NAME" --region "$REGION" >/dev/null 2>&1; then
+  echo "🔄  Updating EventBridge Scheduler target to new revision …"
+  TARGET=$(aws scheduler get-schedule --name "$SCHED_NAME" --region "$REGION" --query 'Target' --output json)
+  TARGET=$(jq --arg arn "$NEW_ARN" '.EcsParameters.TaskDefinitionArn=$arn' <<<"$TARGET")
+  CRON=$(aws scheduler get-schedule --name "$SCHED_NAME" --region "$REGION" --query 'ScheduleExpression' --output text)
+  FLEX=$(aws scheduler get-schedule --name "$SCHED_NAME" --region "$REGION" --query 'FlexibleTimeWindow' --output json)
+
+  aws scheduler update-schedule \
+       --name "$SCHED_NAME" \
+       --schedule-expression "$CRON" \
+       --flexible-time-window "$FLEX" \
+       --target file://<(echo "$TARGET") \
+       --region "$REGION"
+
+  echo "✅  Scheduler now points at $NEW_ARN"
+else
+  echo "⚠️  Scheduler $SCHED_NAME not found — skipped update."
+fi
+
+echo "🎉  Done."
+
