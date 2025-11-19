@@ -13,6 +13,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy code and sample ATP image
 COPY truck_activity_simulator.py ./
 COPY image.jpg ./image.jpg
+COPY ticket_photos/ ./ticket_photos/
+COPY entrypoint.sh ./
 
-CMD ["python", "-u", "truck_activity_simulator.py"]
+# Make entrypoint executable
+RUN chmod +x entrypoint.sh
+
+CMD ["./entrypoint.sh"]
 

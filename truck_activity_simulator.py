@@ -1797,11 +1797,22 @@ def close_prior_day_jobs():
     # Get current date at midnight (start of today)
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
 
+    # Set date range to get ALL job orders (backend defaults to today-only if not specified)
+    # Go back 90 days to capture all recent job orders
+    start_date = (today_start - timedelta(days=90)).strftime("%Y-%m-%d")
+    end_date = today_start.strftime("%Y-%m-%d")
+
     try:
-        # Fetch all job orders with status 1 (Not Started) and 2 (Active)
-        # Status 1 = Not Started, Status 2 = Active, Status 3 = Completed
+        # Fetch all job orders for the company with explicit date range
+        # Must use startDate/endDate or backend will default to today-only
         response = requests.get(
-            f"{API_BASE_URL}/api/2/job-orders?paginate=false&status=1,2&company={COMPANY_ID}",
+            f"{API_BASE_URL}/api/2/job-orders",
+            params={
+                "company": COMPANY_ID,
+                "startDate": start_date,
+                "endDate": end_date,
+                "perPage": 1000  # Large number to ensure we get all results
+            },
             headers=headers
         )
 
@@ -1812,43 +1823,49 @@ def close_prior_day_jobs():
         job_orders = response.json().get("data", [])
 
         if not job_orders:
-            print("✅ No active or pending job orders found.")
+            print("✅ No job orders found.")
             return 0
 
-        # Filter for jobs created before today
-        prior_day_jobs = []
+        print(f"📋 Found {len(job_orders)} total job order(s) for company {COMPANY_ID}")
+
+        # Filter for jobs that are not closed
+        # Note: The backend doesn't return createdAt in the list response, so we can't filter by date
+        # Since we're querying with a date range of last 90 days, all these jobs are old enough to close
+        jobs_to_close = []
         for job in job_orders:
-            created_at_str = job.get("createdAt") or job.get("created_at")
-            if created_at_str:
-                try:
-                    # Parse the creation date
-                    created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
-                    if created_at < today_start:
-                        prior_day_jobs.append(job)
-                except Exception as e:
-                    print(f"⚠️ Could not parse date for job {job.get('id')}: {e}")
+            job_id = job.get("id")
+            status = job.get("status")
+            closed = job.get("closed", False)
+            job_name = job.get("name", "Unknown")
 
-        if not prior_day_jobs:
-            print("✅ No prior day active/pending job orders found.")
+            # Skip jobs that are already closed
+            if closed:
+                continue
+
+            # Close all non-closed jobs (they're from the 90-day lookback window, so they're old)
+            jobs_to_close.append(job)
+
+        if not jobs_to_close:
+            print("✅ No unclosed job orders found.")
             return 0
 
-        print(f"\n🧹 Found {len(prior_day_jobs)} prior day job order(s) to close...")
+        print(f"\n🧹 Found {len(jobs_to_close)} job order(s) to close...")
 
-        # Close each prior day job
+        # Close each job
         closed_count = 0
-        for job in prior_day_jobs:
+        for job in jobs_to_close:
             job_id = job.get("id")
             job_name = job.get("name", "Unknown")
-            created_at = job.get("createdAt") or job.get("created_at")
+            status = job.get("status")
 
-            print(f"  Closing job order {job_id} ('{job_name}', created: {created_at})...")
+            print(f"  Closing job order {job_id} ('{job_name}', status: {status})...")
 
             if close_job_order(job_id):
                 closed_count += 1
             else:
                 print(f"  ⚠️ Failed to close job order {job_id}")
 
-        print(f"✅ Successfully closed {closed_count} of {len(prior_day_jobs)} prior day job order(s)\n")
+        print(f"✅ Successfully closed {closed_count} of {len(jobs_to_close)} job order(s)\n")
         return closed_count
 
     except Exception as e:
