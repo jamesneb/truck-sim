@@ -14,14 +14,14 @@ ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text --region 
 ECR_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/truck-sim:latest"
 ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/ecsTaskExecutionRole"
 
-echo "🔧  Building Docker image …"
+echo "Building Docker image..."
 docker build -t truck-sim:latest .
 
-echo "🏷️   Tag & push to ECR: $ECR_URI"
+echo "Tag & push to ECR: $ECR_URI"
 docker tag  truck-sim:latest "$ECR_URI"
 docker push "$ECR_URI"
 
-echo "📝  Creating taskdef JSON …"
+echo "Creating taskdef JSON..."
 TASKDEF_FILE=$(mktemp)
 cat > "$TASKDEF_FILE" <<EOF
 {
@@ -50,15 +50,15 @@ cat > "$TASKDEF_FILE" <<EOF
 }
 EOF
 
-echo "📦  Registering new task-definition …"
+echo "Registering new task-definition..."
 NEW_ARN=$(aws ecs register-task-definition \
             --cli-input-json file://"$TASKDEF_FILE" \
             --query 'taskDefinition.taskDefinitionArn' \
             --output text --region "$REGION")
-echo "✅  New task-definition ARN: $NEW_ARN"
+echo "New task-definition ARN: $NEW_ARN"
 
 ###############################################################################
-echo "🚀  Launching a one-off test task …"
+echo "Launching a one-off test task..."
 aws ecs run-task \
   --cluster "$CLUSTER" \
   --task-definition "$NEW_ARN" \
@@ -67,27 +67,31 @@ aws ecs run-task \
   --region "$REGION" \
   --query 'tasks[0].taskArn' --output text
 
-echo "ℹ️  Use  〈aws logs tail /ecs/truck-sim --follow --region $REGION〉  to watch logs"
+echo "Use: aws logs tail /ecs/truck-sim --follow --region $REGION"
 ###############################################################################
-# OPTIONAL: wire the nightly schedule to this new revision
+# ALWAYS update the nightly schedule to use the new revision
 if aws scheduler get-schedule --name "$SCHED_NAME" --region "$REGION" >/dev/null 2>&1; then
-  echo "🔄  Updating EventBridge Scheduler target to new revision …"
+  echo "Updating EventBridge Scheduler target to new revision..."
   TARGET=$(aws scheduler get-schedule --name "$SCHED_NAME" --region "$REGION" --query 'Target' --output json)
   TARGET=$(jq --arg arn "$NEW_ARN" '.EcsParameters.TaskDefinitionArn=$arn' <<<"$TARGET")
   CRON=$(aws scheduler get-schedule --name "$SCHED_NAME" --region "$REGION" --query 'ScheduleExpression' --output text)
   FLEX=$(aws scheduler get-schedule --name "$SCHED_NAME" --region "$REGION" --query 'FlexibleTimeWindow' --output json)
 
+  # Write target to temp file to avoid process substitution issues
+  TARGET_FILE=$(mktemp)
+  echo "$TARGET" > "$TARGET_FILE"
+
   aws scheduler update-schedule \
        --name "$SCHED_NAME" \
        --schedule-expression "$CRON" \
        --flexible-time-window "$FLEX" \
-       --target file://<(echo "$TARGET") \
+       --target "file://$TARGET_FILE" \
        --region "$REGION"
 
-  echo "✅  Scheduler now points at $NEW_ARN"
+  rm -f "$TARGET_FILE"
+  echo "Scheduler now points at $NEW_ARN"
 else
-  echo "⚠️  Scheduler $SCHED_NAME not found — skipped update."
+  echo "WARNING: Scheduler $SCHED_NAME not found - skipped update."
 fi
 
-echo "🎉  Done."
-
+echo "Done!"
