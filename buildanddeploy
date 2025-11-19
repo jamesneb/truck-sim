@@ -14,8 +14,8 @@ ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text --region 
 ECR_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/truck-sim:latest"
 ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/ecsTaskExecutionRole"
 
-echo "Building Docker image..."
-docker build -t truck-sim:latest .
+echo "Building Docker image for linux/amd64..."
+docker build --platform linux/amd64 -t truck-sim:latest .
 
 echo "Tag & push to ECR: $ECR_URI"
 docker tag  truck-sim:latest "$ECR_URI"
